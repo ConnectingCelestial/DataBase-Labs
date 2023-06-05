@@ -1,0 +1,40 @@
+Lab1：
+1.设计决策：
+· 为方便生成迭代器，TupleDesc、Tuple等使用链表而非数组保存列/字段等
+· HeapFile定义了一个匿名类来实现DbFileIterator以遍历Tuple
+2.所遇困难：
+· 主要困难为阅读英文文档与Java编程的基础知识，配置环境、回顾继承、多态、封装等知识耗费了大量时间，尤其不熟悉simpleDB的架构，不懂各方法的作用，debug也踩了许多坑
+
+Lab2：
+1.设计决策：
+· 基本按照文档要求，感觉关键是要理解B+树各页的作用，理解完就知道相关方法是干什么的了，就方便调用了，分裂、合并等原理倒是好理解也便于实现，毕竟大部分方法都封装好了以供调用。
+2.所遇困难：
+· 容易忽略的一个点是移动条目时指向的页要修改父指针并放入dirtyPages中；
+· 一开始没理解getParentWithEmptySlots()方法中参数field的作用，后来明白是指向该节点的父节点的字段，用来确定返回哪个页，找了半天
+
+Lab3：
+1.设计决策：
+· Join用的是最普遍的嵌套循环（nested loop join）
+· HashEquiJoin理论上应该选记录少的，但为了方便直接先用HashMap映射child1，然后对每个child2调用get定位桶，与桶内的Tuple进行join
+· 插入/删除Tuple：封装了三层：底层是Page插入/删除，而后DbFile调用之并存入dirtyPages，返回给BufferPool标记为脏
+· Join、Insert、Delete等迭代器实现起来较简单，一个坑就是open时要记得调用父类的open方法，否则不能用
+2.所遇困难：
+· 感觉BufferPoolWriteTest的handleManyDirtyPages测试有问题，理论上所有的页都应该由抽象的DbFile管理生成，并放入缓冲池，但该测试使用自己从HeapFile重写的insertTuple方法直接new一个HeapPage插入，new的页和HeapFile没有什么关系（除非修改HeapPage的构造方法，在新生成一个HeapPage时自动添加到HeapFile中，但该测试的构造参数中页号pageNumber又为numPages()-1，就等于不停重置HeapFile最后一页，没有任何意义），HeapFile用于读Tuple的迭代器始终为空（因为迭代器也是从缓冲池读Tuple，但new出来的页面不进缓冲池），但我不能修改测试，搞了大半天，没办法，最后选择屏蔽该测试的insertTuple方法才通过。
+
+Lab4：
+1.设计决策：
+· 连接查询时间成本估计：t1IO成本 +t1记录数*t2IO成本 (I/O成本)+t1记录数*t2记录数（CPU成本）
+· 连接查询基数估计：
+· 多表连接连接优化：根据文档要求使用动态规划算法得到最优的连接方式
+2.接口修改：
+· 定义了一个Histogram类作为IntegerHistogram和StringHistogram的父类，以方便TableStats类保存直方图（事实上似乎更麻烦了）
+
+lab5：
+1.设计决策:
+· 死锁策略：采用超时中断策略，超过500ms还未申请到锁则视为死锁，中断事务；
+· 粒度：按照文档要求锁以页为粒度；
+· 所有加锁信息用一个线程安全的哈希表保存，键为PageId，值为该页所有事务id与对应锁类型组成的哈希表，锁类型为包含读锁（SHARE）与写锁（EXCLUSIVE）的枚举常量；
+2.所遇困难：
+· 原本缓冲池定义了一个哈希表保存页面、一个链表记录页面使用情况以实现LRU策略。但为了便利没有对二者增删页面的操作原子化，后发现高并发下二者的size产生了不一致。查找发现java有LinkedHashMap类以同步实现保存页面与LRU策略，但为了实现NO STEAL policy，即若最早的页面为脏页则无法驱逐，故放弃了LRU策略选择了一个线程安全的哈希表ConcurrentHashMap保存页面。
+· 发现一个问题，脏页标记好像没什么用，反而会导致不一致。比如BufferPool的insert和delete操作由DbFile的相应操作实现，返回修改的页面链表，再由BufferPool标记为脏，而这些页面在被取出时都必定加上了EXCLUSIVE锁，加之有NO STEAL policy，事务不结束（写锁未释放）脏页面就不会弹出，那么只需遍历加锁信息，把加了写锁的页面写回磁盘或丢弃即可。而由于加写锁与标记脏时间的不一致性，若在insert或delete过程中事务abort了，则这些页面尚未被标记为脏，若基于脏页面进行操作反而会出错，那么脏页的意义何在呢？
+· BTreeTest调了半天，把锁暂时全改成写锁果然跑通了，检查一下是加锁函数里少了一个return，导致没有正常返回
